@@ -848,20 +848,6 @@ class STL_Admin {
 			sodium_memzero( $private_key_b58 );
 		}
 
-		// Log results (no key material ever logged).
-		$success = count( array_filter( $results, fn( $r ) => $r['status'] === 'success' ) );
-		$failed  = count( $results ) - $success;
-		error_log( sprintf( '[STL Airdrop] %d succeeded, %d failed.', $success, $failed ) );
-		foreach ( $results as $r ) {
-			if ( $r['signature'] ) {
-				error_log( sprintf( '[STL Airdrop] %s → %s tokens | sig: %s',
-					$r['twitter'] ?: $r['wallet'], $r['amount_ui'], $r['signature'] ) );
-			} else {
-				error_log( sprintf( '[STL Airdrop] %s → FAILED: %s',
-					$r['twitter'] ?: $r['wallet'], $r['error'] ) );
-			}
-		}
-
 		wp_send_json_success( [ 'results' => $results ] );
 	}
 

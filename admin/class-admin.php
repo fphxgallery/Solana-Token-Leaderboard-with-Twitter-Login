@@ -8,6 +8,8 @@ class STL_Admin {
 		add_action( 'admin_menu',  [ $this, 'add_menu' ] );
 		add_action( 'admin_init',  [ $this, 'register_settings' ] );
 		add_action( 'wp_ajax_stl_admin_balance_check', [ $this, 'ajax_balance_check' ] );
+		add_action( 'wp_ajax_stl_preview_airdrop',     [ $this, 'ajax_preview_airdrop' ] );
+		add_action( 'wp_ajax_stl_execute_airdrop',     [ $this, 'ajax_execute_airdrop' ] );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
 	}
 
@@ -49,6 +51,11 @@ class STL_Admin {
 		foreach ( array_keys( self::color_defaults() ) as $key ) {
 			register_setting( 'stl_settings', $key, $color );
 		}
+
+		// Treasury wallet (encrypted private key).
+		register_setting( 'stl_settings', 'stl_treasury_private_key', [
+			'sanitize_callback' => [ $this, 'sanitize_treasury_key' ],
+		] );
 	}
 
 	public function enqueue_assets( $hook ) {
@@ -72,6 +79,12 @@ class STL_Admin {
 				});
 			});
 		' );
+		// Airdrop UI script.
+		wp_enqueue_script( 'stl-airdrop', STL_PLUGIN_URL . 'assets/js/airdrop.js', [], STL_VERSION, true );
+		wp_localize_script( 'stl-airdrop', 'stlAirdrop', [
+			'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+			'nonce'   => wp_create_nonce( 'stl_airdrop' ),
+		] );
 	}
 
 	public function render_page() {
@@ -271,8 +284,90 @@ class STL_Admin {
 				});
 				</script>
 
+				<h2>Treasury Wallet</h2>
+				<p>
+					Import a dedicated Solana wallet used to fund token airdrops.
+					<strong>Use a separate treasury wallet — never your main wallet.</strong>
+				</p>
+				<table class="form-table">
+					<tr>
+						<th scope="row"><label for="stl_treasury_key_input">Private Key (Base58)</label></th>
+						<td>
+							<input type="password" id="stl_treasury_key_input"
+								name="stl_treasury_private_key"
+								value=""
+								placeholder="<?php echo get_option( 'stl_treasury_private_key' ) ? '(key saved — paste a new key to replace)' : 'Paste 64-byte Base58 keypair from Phantom / Solflare'; ?>"
+								class="regular-text" autocomplete="new-password" />
+							<p class="description">
+								The key is encrypted with AES-256-GCM before being stored.
+								It never appears in plain text after saving.
+							</p>
+						</td>
+					</tr>
+					<?php $pub = get_option( 'stl_treasury_public_key' ); if ( $pub ) : ?>
+					<tr>
+						<th scope="row">Derived Public Key</th>
+						<td>
+							<code><?php echo esc_html( $pub ); ?></code>
+							<p class="description">
+								Verify this matches your treasury wallet address before sending any airdrop.
+							</p>
+						</td>
+					</tr>
+					<?php endif; ?>
+				</table>
+
 			<?php submit_button(); ?>
 			</form>
+
+			<hr>
+
+			<!-- Airdrop -->
+			<h2>Airdrop Tokens</h2>
+			<?php if ( ! get_option( 'stl_treasury_private_key' ) ) : ?>
+			<p>Configure a <strong>Treasury Wallet</strong> above to enable token airdrops.</p>
+			<?php else : ?>
+			<p>
+				Distribute <code><?php echo esc_html( get_option( 'stl_token_mint', STL_TOKEN_MINT ) ); ?></code> tokens
+				to leaderboard users. Preview the distribution first, then confirm to send.
+			</p>
+			<table class="form-table" style="max-width:680px;">
+				<tr>
+					<th scope="row"><label for="stl-airdrop-total">Total tokens to send</label></th>
+					<td>
+						<input type="number" id="stl-airdrop-total" min="1" step="any"
+							class="regular-text" placeholder="e.g. 1000000" />
+					</td>
+				</tr>
+				<tr>
+					<th scope="row">Distribution method</th>
+					<td>
+						<label>
+							<input type="radio" name="stl_airdrop_method" value="balance" checked />
+							By current token balance <span style="color:#6b7280;">(proportional to holdings)</span>
+						</label><br>
+						<label>
+							<input type="radio" name="stl_airdrop_method" value="rank" />
+							By leaderboard rank <span style="color:#6b7280;">(rank 1 gets the largest share)</span>
+						</label>
+					</td>
+				</tr>
+				<tr>
+					<th scope="row"><label for="stl-airdrop-top-n">Limit to top</label></th>
+					<td>
+						<input type="number" id="stl-airdrop-top-n" min="1" max="200" value="25" class="small-text" />
+						<span class="description"> users</span>
+					</td>
+				</tr>
+			</table>
+			<p>
+				<button type="button" id="stl-airdrop-preview" class="button button-secondary">Preview Distribution</button>
+				<button type="button" id="stl-airdrop-confirm" class="button button-primary" style="display:none;margin-left:8px;">Confirm Airdrop</button>
+			</p>
+			<div id="stl-airdrop-msg"></div>
+			<div id="stl-airdrop-preview-area"></div>
+			<div id="stl-airdrop-result-area"></div>
+			<?php endif; ?>
 
 			<hr>
 
@@ -462,6 +557,58 @@ class STL_Admin {
 		<?php
 	}
 
+	// -------------------------------------------------------------------------
+	// Settings sanitizers
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Sanitize the treasury private key field.
+	 *
+	 * If the field is empty, the existing encrypted key is preserved.
+	 * Otherwise the key is validated, the derived public key stored, and the
+	 * base58 private key string encrypted before being written to the DB.
+	 *
+	 * @param  string $input  Raw value from the settings form.
+	 * @return string  Encrypted key (or existing value on error / empty input).
+	 */
+	public function sanitize_treasury_key( $input ) {
+		$input = trim( (string) $input );
+
+		// Empty submission — keep existing encrypted key.
+		if ( $input === '' ) {
+			return get_option( 'stl_treasury_private_key', '' );
+		}
+
+		if ( ! class_exists( 'STL_Solana_Signer' ) ) {
+			add_settings_error( 'stl_treasury_private_key', 'no_signer', 'Signer class not loaded.' );
+			return get_option( 'stl_treasury_private_key', '' );
+		}
+
+		$signer = new STL_Solana_Signer();
+		$req    = $signer->check_requirements();
+		if ( is_wp_error( $req ) ) {
+			add_settings_error( 'stl_treasury_private_key', 'req', $req->get_error_message() );
+			return get_option( 'stl_treasury_private_key', '' );
+		}
+
+		try {
+			$kp = $signer->decode_private_key( $input );
+		} catch ( \Exception $e ) {
+			add_settings_error( 'stl_treasury_private_key', 'invalid', 'Invalid private key: ' . $e->getMessage() );
+			return get_option( 'stl_treasury_private_key', '' );
+		}
+
+		// Persist the derived public key for display.
+		update_option( 'stl_treasury_public_key', $signer->b58_encode( $kp['public'] ) );
+
+		// Encrypt and return the base58 private key string.
+		return $signer->encrypt_key( $input );
+	}
+
+	// -------------------------------------------------------------------------
+	// AJAX: manual balance check
+	// -------------------------------------------------------------------------
+
 	/**
 	 * AJAX handler: manually trigger the daily balance check.
 	 */
@@ -474,5 +621,238 @@ class STL_Admin {
 		$cron = new STL_Cron();
 		$cron->run();
 		wp_send_json_success( 'Balance check complete.' );
+	}
+
+	// -------------------------------------------------------------------------
+	// AJAX: airdrop preview
+	// -------------------------------------------------------------------------
+
+	/**
+	 * AJAX handler: calculate the proposed distribution without sending anything.
+	 *
+	 * POST params: total_amount (float), method (balance|rank), top_n (int)
+	 */
+	public function ajax_preview_airdrop() {
+		check_ajax_referer( 'stl_airdrop', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Unauthorized.' );
+		}
+
+		$total  = floatval( $_POST['total_amount'] ?? 0 );
+		$method = sanitize_key( $_POST['method'] ?? 'balance' );
+		$top_n  = max( 1, min( 200, intval( $_POST['top_n'] ?? 25 ) ) );
+
+		if ( $total <= 0 ) {
+			wp_send_json_error( 'Total amount must be greater than 0.' );
+		}
+		if ( ! in_array( $method, [ 'balance', 'rank' ], true ) ) {
+			wp_send_json_error( 'Invalid distribution method.' );
+		}
+
+		// Load users that have a linked wallet.
+		$users = get_users( [
+			'meta_key'     => 'stl_solana_wallet',
+			'meta_compare' => '!=',
+			'meta_value'   => '',
+			'number'       => 500,
+		] );
+
+		$rows = [];
+		foreach ( $users as $u ) {
+			$wallet  = get_user_meta( $u->ID, 'stl_solana_wallet',    true );
+			$balance = get_user_meta( $u->ID, 'stl_token_balance_ui', true );
+			$twitter = get_user_meta( $u->ID, 'stl_twitter_username', true );
+
+			if ( ! $wallet || $balance === '' || $balance === false ) {
+				continue;
+			}
+			$rows[] = [
+				'uid'     => $u->ID,
+				'wallet'  => $wallet,
+				'balance' => (float) $balance,
+				'twitter' => $twitter ?: '',
+			];
+		}
+
+		if ( ! $rows ) {
+			wp_send_json_error( 'No eligible users found (users need a linked wallet and a recorded balance).' );
+		}
+
+		// Sort highest balance first, assign ranks before slicing.
+		usort( $rows, fn( $a, $b ) => $b['balance'] <=> $a['balance'] );
+		foreach ( $rows as $i => &$row ) {
+			$row['rank'] = $i + 1;
+		}
+		unset( $row );
+
+		// Trim to top_n.
+		$rows = array_slice( $rows, 0, $top_n );
+
+		// Compute weights.
+		if ( $method === 'balance' ) {
+			$total_weight = array_sum( array_column( $rows, 'balance' ) );
+			foreach ( $rows as &$row ) {
+				$row['weight'] = $total_weight > 0 ? $row['balance'] / $total_weight : 0;
+			}
+		} else {
+			// Rank-based: weight = 1/rank, then normalise.
+			foreach ( $rows as &$row ) {
+				$row['weight'] = 1.0 / $row['rank'];
+			}
+			$total_weight = array_sum( array_column( $rows, 'weight' ) );
+			foreach ( $rows as &$row ) {
+				$row['weight'] = $total_weight > 0 ? $row['weight'] / $total_weight : 0;
+			}
+		}
+		unset( $row );
+
+		// Token decimals (from RPC; falls back to 6).
+		$mint     = get_option( 'stl_token_mint', STL_TOKEN_MINT );
+		$decimals = $this->get_token_decimals( $mint );
+
+		// Resolve token accounts for each recipient.
+		$signer     = new STL_Solana_Signer();
+		$skipped    = 0;
+		$recipients = [];
+		foreach ( $rows as $row ) {
+			$ta = $signer->get_token_account( $row['wallet'], $mint );
+			if ( ! $ta ) {
+				$skipped++;
+				continue;
+			}
+			$amount_ui  = round( $row['weight'] * $total, $decimals );
+			$amount_raw = (int) round( $amount_ui * pow( 10, $decimals ) );
+
+			$recipients[] = [
+				'rank'          => $row['rank'],
+				'twitter'       => $row['twitter'],
+				'wallet'        => $row['wallet'],
+				'token_account' => $ta,
+				'amount_ui'     => $amount_ui,
+				'amount_raw'    => $amount_raw,
+			];
+		}
+
+		if ( ! $recipients ) {
+			wp_send_json_error( 'No recipients have a token account for this mint.' );
+		}
+
+		wp_send_json_success( [
+			'recipients' => $recipients,
+			'skipped'    => $skipped,
+			'total_ui'   => array_sum( array_column( $recipients, 'amount_ui' ) ),
+		] );
+	}
+
+	// -------------------------------------------------------------------------
+	// AJAX: airdrop execute
+	// -------------------------------------------------------------------------
+
+	/**
+	 * AJAX handler: sign and submit SPL token transfers to confirmed recipients.
+	 *
+	 * POST params: recipients (JSON array from the preview response)
+	 */
+	public function ajax_execute_airdrop() {
+		check_ajax_referer( 'stl_airdrop', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Unauthorized.' );
+		}
+
+		$stored_key = get_option( 'stl_treasury_private_key', '' );
+		if ( ! $stored_key ) {
+			wp_send_json_error( 'No treasury key configured.' );
+		}
+
+		$recipients_raw = json_decode( wp_unslash( $_POST['recipients'] ?? '[]' ), true );
+		if ( ! is_array( $recipients_raw ) || empty( $recipients_raw ) ) {
+			wp_send_json_error( 'No recipients provided.' );
+		}
+
+		// Accept only the fields we need; sanitize each.
+		$recipients = [];
+		foreach ( $recipients_raw as $r ) {
+			if ( empty( $r['wallet'] ) || empty( $r['token_account'] ) || ! isset( $r['amount_raw'] ) ) {
+				continue;
+			}
+			$recipients[] = [
+				'wallet'        => sanitize_text_field( $r['wallet'] ),
+				'token_account' => sanitize_text_field( $r['token_account'] ),
+				'amount_raw'    => (int) $r['amount_raw'],
+				'amount_ui'     => (float) ( $r['amount_ui'] ?? 0 ),
+				'twitter'       => sanitize_text_field( $r['twitter'] ?? '' ),
+			];
+		}
+
+		if ( ! $recipients ) {
+			wp_send_json_error( 'No valid recipients.' );
+		}
+
+		$signer = new STL_Solana_Signer();
+		$req    = $signer->check_requirements();
+		if ( is_wp_error( $req ) ) {
+			wp_send_json_error( $req->get_error_message() );
+		}
+
+		try {
+			$private_key_b58 = $signer->decrypt_key( $stored_key );
+		} catch ( \Exception $e ) {
+			wp_send_json_error( 'Failed to decrypt treasury key: ' . $e->getMessage() );
+		}
+
+		$results = $signer->airdrop( $private_key_b58, $recipients );
+
+		// Zero out the key variable immediately after use.
+		if ( function_exists( 'sodium_memzero' ) ) {
+			sodium_memzero( $private_key_b58 );
+		}
+
+		// Log results (no key material ever logged).
+		$success = count( array_filter( $results, fn( $r ) => $r['status'] === 'success' ) );
+		$failed  = count( $results ) - $success;
+		error_log( sprintf( '[STL Airdrop] %d succeeded, %d failed.', $success, $failed ) );
+		foreach ( $results as $r ) {
+			if ( $r['signature'] ) {
+				error_log( sprintf( '[STL Airdrop] %s → %s tokens | sig: %s',
+					$r['twitter'] ?: $r['wallet'], $r['amount_ui'], $r['signature'] ) );
+			} else {
+				error_log( sprintf( '[STL Airdrop] %s → FAILED: %s',
+					$r['twitter'] ?: $r['wallet'], $r['error'] ) );
+			}
+		}
+
+		wp_send_json_success( [ 'results' => $results ] );
+	}
+
+	// -------------------------------------------------------------------------
+	// RPC helpers
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Fetch the number of decimal places for a token mint via getTokenSupply.
+	 * Falls back to 6 (common for SPL tokens) on any failure.
+	 *
+	 * @param  string $mint  Base58 mint address.
+	 * @return int
+	 */
+	private function get_token_decimals( string $mint ): int {
+		$response = wp_remote_post(
+			get_option( 'stl_solana_rpc', STL_SOLANA_RPC ),
+			[
+				'headers' => [ 'Content-Type' => 'application/json' ],
+				'body'    => wp_json_encode( [
+					'jsonrpc' => '2.0',
+					'id'      => 1,
+					'method'  => 'getTokenSupply',
+					'params'  => [ $mint ],
+				] ),
+				'timeout' => 10,
+			]
+		);
+		if ( is_wp_error( $response ) ) {
+			return 6;
+		}
+		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+		return (int) ( $body['result']['value']['decimals'] ?? 6 );
 	}
 }

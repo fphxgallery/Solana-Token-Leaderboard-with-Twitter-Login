@@ -22,6 +22,7 @@ define( 'STL_SOLANA_RPC', 'https://api.mainnet-beta.solana.com' );
 
 require_once STL_PLUGIN_DIR . 'includes/class-twitter-auth.php';
 require_once STL_PLUGIN_DIR . 'includes/class-solana.php';
+require_once STL_PLUGIN_DIR . 'includes/class-solana-signer.php';
 require_once STL_PLUGIN_DIR . 'includes/class-cron.php';
 require_once STL_PLUGIN_DIR . 'public/class-public.php';
 

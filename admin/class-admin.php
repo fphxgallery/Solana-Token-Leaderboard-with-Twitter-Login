@@ -340,6 +340,19 @@ class STL_Admin {
 					</td>
 				</tr>
 				<tr>
+					<th scope="row">Asset</th>
+					<td>
+						<label>
+							<input type="radio" name="stl_airdrop_asset" value="token" checked />
+							SPL Token <span style="color:#6b7280;">(mint from settings)</span>
+						</label><br>
+						<label>
+							<input type="radio" name="stl_airdrop_asset" value="sol" />
+							Native SOL
+						</label>
+					</td>
+				</tr>
+				<tr>
 					<th scope="row">Distribution method</th>
 					<td>
 						<label>
@@ -641,6 +654,10 @@ class STL_Admin {
 		$total  = floatval( $_POST['total_amount'] ?? 0 );
 		$method = sanitize_key( $_POST['method'] ?? 'balance' );
 		$top_n  = max( 1, min( 200, intval( $_POST['top_n'] ?? 25 ) ) );
+		$asset  = in_array( sanitize_key( $_POST['asset'] ?? 'token' ), [ 'token', 'sol' ], true )
+			? sanitize_key( $_POST['asset'] ?? 'token' )
+			: 'token';
+		$is_sol = $asset === 'sol';
 
 		if ( $total <= 0 ) {
 			wp_send_json_error( 'Total amount must be greater than 0.' );
@@ -706,41 +723,60 @@ class STL_Admin {
 		}
 		unset( $row );
 
-		// Token decimals (from RPC; falls back to 6).
 		$mint     = get_option( 'stl_token_mint', STL_TOKEN_MINT );
-		$decimals = $this->get_token_decimals( $mint );
-
-		// Resolve token accounts for each recipient.
-		$signer     = new STL_Solana_Signer();
-		$skipped    = 0;
+		$signer   = new STL_Solana_Signer();
+		$skipped  = 0;
 		$recipients = [];
-		foreach ( $rows as $row ) {
-			$ta = $signer->get_token_account( $row['wallet'], $mint );
-			if ( ! $ta ) {
-				$skipped++;
-				continue;
-			}
-			$amount_ui  = round( $row['weight'] * $total, $decimals );
-			$amount_raw = (int) round( $amount_ui * pow( 10, $decimals ) );
 
-			$recipients[] = [
-				'rank'          => $row['rank'],
-				'twitter'       => $row['twitter'],
-				'wallet'        => $row['wallet'],
-				'token_account' => $ta,
-				'amount_ui'     => $amount_ui,
-				'amount_raw'    => $amount_raw,
-			];
+		if ( $is_sol ) {
+			// Native SOL: 1 SOL = 1,000,000,000 lamports. No token account lookup needed.
+			$decimals = 9;
+			foreach ( $rows as $row ) {
+				$amount_ui  = round( $row['weight'] * $total, $decimals );
+				$amount_raw = (int) round( $amount_ui * 1e9 );
+				$recipients[] = [
+					'rank'          => $row['rank'],
+					'twitter'       => $row['twitter'],
+					'wallet'        => $row['wallet'],
+					'token_account' => $row['wallet'], // System Program transfers wallet → wallet
+					'amount_ui'     => $amount_ui,
+					'amount_raw'    => $amount_raw,
+				];
+			}
+		} else {
+			// SPL token: resolve each recipient's associated token account (ATA).
+			$decimals = $this->get_token_decimals( $mint );
+			foreach ( $rows as $row ) {
+				$ta = $signer->get_token_account( $row['wallet'], $mint );
+				if ( ! $ta ) {
+					$skipped++;
+					continue;
+				}
+				$amount_ui  = round( $row['weight'] * $total, $decimals );
+				$amount_raw = (int) round( $amount_ui * pow( 10, $decimals ) );
+				$recipients[] = [
+					'rank'          => $row['rank'],
+					'twitter'       => $row['twitter'],
+					'wallet'        => $row['wallet'],
+					'token_account' => $ta,
+					'amount_ui'     => $amount_ui,
+					'amount_raw'    => $amount_raw,
+				];
+			}
 		}
 
 		if ( ! $recipients ) {
-			wp_send_json_error( 'No recipients have a token account for this mint.' );
+			$err = $is_sol
+				? 'No eligible recipients found.'
+				: 'No recipients have a token account for this mint.';
+			wp_send_json_error( $err );
 		}
 
 		wp_send_json_success( [
 			'recipients' => $recipients,
 			'skipped'    => $skipped,
 			'total_ui'   => array_sum( array_column( $recipients, 'amount_ui' ) ),
+			'asset'      => $asset,
 		] );
 	}
 
@@ -763,6 +799,11 @@ class STL_Admin {
 		if ( ! $stored_key ) {
 			wp_send_json_error( 'No treasury key configured.' );
 		}
+
+		$asset  = in_array( sanitize_key( $_POST['asset'] ?? 'token' ), [ 'token', 'sol' ], true )
+			? sanitize_key( $_POST['asset'] ?? 'token' )
+			: 'token';
+		$mint   = $asset === 'sol' ? STL_Solana_Signer::SOL_MINT : '';
 
 		$recipients_raw = json_decode( wp_unslash( $_POST['recipients'] ?? '[]' ), true );
 		if ( ! is_array( $recipients_raw ) || empty( $recipients_raw ) ) {
@@ -800,7 +841,7 @@ class STL_Admin {
 			wp_send_json_error( 'Failed to decrypt treasury key: ' . $e->getMessage() );
 		}
 
-		$results = $signer->airdrop( $private_key_b58, $recipients );
+		$results = $signer->airdrop( $private_key_b58, $recipients, $mint );
 
 		// Zero out the key variable immediately after use.
 		if ( function_exists( 'sodium_memzero' ) ) {

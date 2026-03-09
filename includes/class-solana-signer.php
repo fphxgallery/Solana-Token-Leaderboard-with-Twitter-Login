@@ -16,6 +16,15 @@ class STL_Solana_Signer {
 	/** Solana SPL Token Program ID (base58). */
 	const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
+	/** Solana System Program ID (base58). */
+	const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
+
+	/**
+	 * Wrapped SOL mint — used to signal a native SOL transfer rather than
+	 * an SPL token transfer (the System Program is used instead of Token).
+	 */
+	const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
 	/** Maximum recipients per transaction (stays well under 1232-byte limit). */
 	const BATCH_SIZE = 10;
 
@@ -143,31 +152,45 @@ class STL_Solana_Signer {
 	}
 
 	/**
-	 * Sign and send SPL token transfers to a batch of recipients.
+	 * Sign and send token (or native SOL) transfers to a batch of recipients.
 	 *
 	 * Each batch of up to BATCH_SIZE recipients is grouped into one Solana
 	 * transaction. A fresh blockhash is fetched per batch.
 	 *
+	 * Pass SOL_MINT as $mint to send native SOL via the System Program instead
+	 * of an SPL token transfer. In that case, recipients' `token_account` field
+	 * should contain the recipient wallet address (not an ATA).
+	 *
 	 * @param  string $private_key_b58  Treasury 64-byte keypair in base58.
 	 * @param  array  $recipients       [{wallet, token_account, amount_raw, amount_ui, twitter}]
+	 * @param  string $mint             Mint to send (default: stl_token_mint option). Pass SOL_MINT for native SOL.
 	 * @return array  [{twitter, wallet, amount_ui, signature|null, error|null, status}]
 	 */
-	public function airdrop( string $private_key_b58, array $recipients ): array {
+	public function airdrop( string $private_key_b58, array $recipients, string $mint = '' ): array {
+		if ( $mint === '' ) {
+			$mint = get_option( 'stl_token_mint', STL_TOKEN_MINT );
+		}
+
+		$is_sol     = strtolower( $mint ) === strtolower( self::SOL_MINT );
 		$kp         = $this->decode_private_key( $private_key_b58 );
 		$secret_key = $kp['secret'];
 		$signer_pub = $kp['public'];
-		$mint       = get_option( 'stl_token_mint', STL_TOKEN_MINT );
 		$signer_b58 = $this->b58_encode( $signer_pub );
 
-		// Locate the treasury's token account for this mint.
-		$source_ata = $this->get_token_account( $signer_b58, $mint );
-		if ( ! $source_ata ) {
-			sodium_memzero( $secret_key );
-			$err = 'Treasury wallet has no token account for this mint. It must hold tokens before sending.';
-			return array_map(
-				fn( $r ) => $this->make_result( $r, null, $err ),
-				$recipients
-			);
+		if ( $is_sol ) {
+			// Native SOL: no source token account required — funds come directly from the signer wallet.
+			$source_ata = null;
+		} else {
+			// SPL token: locate the treasury's token account for this mint.
+			$source_ata = $this->get_token_account( $signer_b58, $mint );
+			if ( ! $source_ata ) {
+				sodium_memzero( $secret_key );
+				$err = 'Treasury wallet has no token account for this mint. It must hold tokens before sending.';
+				return array_map(
+					fn( $r ) => $this->make_result( $r, null, $err ),
+					$recipients
+				);
+			}
 		}
 
 		$results = [];
@@ -181,7 +204,10 @@ class STL_Solana_Signer {
 				continue;
 			}
 
-			$message   = $this->build_message( $blockhash, $signer_pub, $source_ata, $chunk );
+			$message = $is_sol
+				? $this->build_sol_message( $blockhash, $signer_pub, $chunk )
+				: $this->build_message( $blockhash, $signer_pub, $source_ata, $chunk );
+
 			$signed_tx = $this->sign_message( $message, $secret_key );
 			$sig       = $this->send_transaction( $signed_tx );
 
@@ -320,6 +346,63 @@ class STL_Solana_Signer {
 
 			$instructions .= chr( $prog_idx )
 				. $this->compact_u16( 3 ) . chr( 1 ) . chr( $dest_idx ) . chr( 0 ) // source, dest, authority
+				. $this->compact_u16( strlen( $data ) ) . $data;
+		}
+
+		return $header
+			. $accounts_bin
+			. $blockhash
+			. $this->compact_u16( count( $recipients ) )
+			. $instructions;
+	}
+
+	/**
+	 * Build an unsigned Solana legacy transaction message for native SOL transfers.
+	 *
+	 * Account layout:
+	 *   [0]      signer / payer    (writable, signer)
+	 *   [1..N]   recipient wallets (writable)
+	 *   [N+1]    System Program    (read-only)
+	 *
+	 * Each instruction transfers lamports from the signer to one recipient using
+	 * the System Program Transfer (discriminant 2, encoded as u32-LE).
+	 *
+	 * @param  string $blockhash_b58  Recent blockhash (base58).
+	 * @param  string $signer_pub     32-byte signer public key (raw bytes).
+	 * @param  array  $recipients     [{token_account (wallet base58), amount_raw (lamports)}]
+	 * @return string Binary message bytes (unsigned).
+	 */
+	private function build_sol_message(
+		string $blockhash_b58,
+		string $signer_pub,
+		array $recipients
+	): string {
+		$sys_prog  = $this->b58_decode( self::SYSTEM_PROGRAM_ID );
+		$blockhash = $this->b58_decode( $blockhash_b58 );
+
+		// Accounts: signer first, then each recipient wallet, then System Program.
+		$accounts  = [ $signer_pub ];
+		$dest_idxs = [];
+		foreach ( $recipients as $i => $r ) {
+			$accounts[]  = $this->b58_decode( $r['token_account'] ); // wallet address
+			$dest_idxs[] = 1 + $i;
+		}
+		$accounts[] = $sys_prog;
+		$prog_idx   = count( $accounts ) - 1;
+
+		// Header: 1 required signer, 0 read-only signers, 1 read-only unsigned (System Program).
+		$header = chr( 1 ) . chr( 0 ) . chr( 1 );
+
+		$accounts_bin = $this->compact_u16( count( $accounts ) ) . implode( '', $accounts );
+
+		$instructions = '';
+		foreach ( $recipients as $i => $r ) {
+			$dest_idx = $dest_idxs[ $i ];
+			// System Program Transfer instruction: u32-LE(2) + u64-LE(lamports) = 12 bytes.
+			$data = pack( 'V', 2 ) . $this->pack_u64_le( (int) $r['amount_raw'] );
+
+			$instructions .= chr( $prog_idx )
+				. $this->compact_u16( 2 ) . chr( 0 ) . chr( $dest_idx ) // from=signer, to=recipient
 				. $this->compact_u16( strlen( $data ) ) . $data;
 		}
 

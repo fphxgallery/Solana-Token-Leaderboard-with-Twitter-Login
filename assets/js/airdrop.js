@@ -21,6 +21,7 @@
 		var total  = parseFloat( document.getElementById( 'stl-airdrop-total' ).value );
 		var method = document.querySelector( 'input[name="stl_airdrop_method"]:checked' ).value;
 		var topN   = parseInt( document.getElementById( 'stl-airdrop-top-n' ).value, 10 );
+		var asset  = document.querySelector( 'input[name="stl_airdrop_asset"]:checked' ).value;
 
 		if ( isNaN( total ) || total <= 0 ) {
 			showMsg( 'Please enter a valid total amount greater than 0.', 'error' );
@@ -40,6 +41,7 @@
 		fd.append( 'total_amount', total );
 		fd.append( 'method',       method );
 		fd.append( 'top_n',        topN );
+		fd.append( 'asset',        asset );
 
 		fetch( ajaxUrl, { method: 'POST', body: fd } )
 			.then( function ( r ) { return r.json(); } )
@@ -70,11 +72,12 @@
 	confirmBtn.addEventListener( 'click', function () {
 		if ( ! preview || ! preview.recipients.length ) return;
 
-		var count = preview.recipients.length;
-		var total = preview.total_ui;
+		var count      = preview.recipients.length;
+		var total      = preview.total_ui;
+		var assetLabel = ( preview.asset === 'sol' ) ? 'SOL' : 'tokens';
 
 		if ( ! window.confirm(
-			'Send ' + Number( total ).toLocaleString() + ' tokens to ' + count + ' user(s)?\n\nThis transaction cannot be undone.'
+			'Send ' + Number( total ).toLocaleString() + ' ' + assetLabel + ' to ' + count + ' user(s)?\n\nThis transaction cannot be undone.'
 		) ) return;
 
 		confirmBtn.disabled    = true;
@@ -85,6 +88,7 @@
 		var fd = new FormData();
 		fd.append( 'action',     'stl_execute_airdrop' );
 		fd.append( 'nonce',      nonce );
+		fd.append( 'asset',      preview.asset || 'token' );
 		fd.append( 'recipients', JSON.stringify( preview.recipients ) );
 
 		fetch( ajaxUrl, { method: 'POST', body: fd } )
@@ -114,13 +118,14 @@
 	function renderPreview( data ) {
 		var recipients = data.recipients;
 		var totalUi    = recipients.reduce( function ( s, r ) { return s + ( r.amount_ui || 0 ); }, 0 );
+		var amtLabel   = ( data.asset === 'sol' ) ? 'SOL' : 'Tokens';
 
 		var html = '<table class="wp-list-table widefat fixed striped" style="max-width:900px;margin-top:14px">'
 			+ '<thead><tr>'
 			+ '<th style="width:50px">#</th>'
 			+ '<th>X Handle</th>'
 			+ '<th>Wallet</th>'
-			+ '<th style="text-align:right">Amount</th>'
+			+ '<th style="text-align:right">' + amtLabel + '</th>'
 			+ '</tr></thead><tbody>';
 
 		recipients.forEach( function ( r ) {

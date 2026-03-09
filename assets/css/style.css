@@ -1,0 +1,537 @@
+/* ==========================================================================
+   Solana Twitter Login — frontend styles
+   ========================================================================== */
+
+/* --- Buttons ---------------------------------------------------------------- */
+
+.stl-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 20px;
+	border-radius: 8px;
+	font-size: 15px;
+	font-weight: 600;
+	line-height: 1;
+	cursor: pointer;
+	border: none;
+	text-decoration: none;
+	transition: opacity 0.15s ease, background 0.15s ease;
+	white-space: nowrap;
+}
+
+.stl-btn:hover,
+.stl-btn:focus {
+	opacity: 0.85;
+	text-decoration: none;
+}
+
+.stl-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* X / Twitter */
+.stl-btn-twitter {
+	background: #000;
+	color: #fff;
+}
+
+/* Primary — Solana purple */
+.stl-btn-primary {
+	background: #9945ff;
+	color: #fff;
+}
+
+/* Secondary — Solana green */
+.stl-btn-secondary {
+	background: #14f195;
+	color: #000;
+}
+
+/* Outline */
+.stl-btn-outline {
+	background: transparent;
+	border: 1.5px solid #ccc;
+	color: #333;
+}
+
+.stl-btn-outline:hover {
+	border-color: #999;
+}
+
+/* Danger outline */
+.stl-btn-danger {
+	border-color: #dc2626 !important;
+	color: #dc2626 !important;
+}
+
+/* --- X logo icon ------------------------------------------------------------ */
+
+.stl-x-icon {
+	width: 18px;
+	height: 18px;
+	fill: currentColor;
+	flex-shrink: 0;
+}
+
+/* --- Profile card (login button — connected state) -------------------------- */
+
+.stl-profile-card {
+	display: inline-flex;
+	align-items: center;
+	gap: 12px;
+	padding: 12px 16px;
+	border: 1.5px solid #e5e7eb;
+	border-radius: 12px;
+	background: #fff;
+	max-width: 400px;
+}
+
+.stl-avatar {
+	width: 48px;
+	height: 48px;
+	border-radius: 50%;
+	object-fit: cover;
+	flex-shrink: 0;
+}
+
+.stl-profile-info {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.stl-profile-info strong {
+	font-size: 15px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.stl-profile-info span {
+	font-size: 13px;
+	color: #6b7280;
+}
+
+/* --- Wallet form ------------------------------------------------------------ */
+
+.stl-wallet-form {
+	max-width: 500px;
+	padding: 24px;
+	border: 1.5px solid #e5e7eb;
+	border-radius: 12px;
+	background: #fff;
+}
+
+.stl-form-title {
+	margin: 0 0 16px;
+	font-size: 17px;
+}
+
+.stl-label {
+	display: block;
+	font-size: 13px;
+	font-weight: 600;
+	color: #374151;
+	margin-bottom: 6px;
+}
+
+.stl-wallet-address {
+	display: block;
+	word-break: break-all;
+	background: #f3f4f6;
+	padding: 10px 14px;
+	border-radius: 6px;
+	font-size: 13px;
+	font-family: monospace;
+	margin-bottom: 14px;
+	color: #111827;
+}
+
+.stl-wallet-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.stl-input {
+	width: 100%;
+	padding: 10px 14px;
+	border: 1.5px solid #d1d5db;
+	border-radius: 8px;
+	font-size: 14px;
+	font-family: monospace;
+	margin-bottom: 12px;
+	box-sizing: border-box;
+	transition: border-color 0.15s;
+}
+
+.stl-input:focus {
+	border-color: #9945ff;
+	outline: none;
+	box-shadow: 0 0 0 3px rgba(153, 69, 255, 0.12);
+}
+
+.stl-wallet-input-actions {
+	display: flex;
+	gap: 8px;
+}
+
+/* --- Balance card ----------------------------------------------------------- */
+
+.stl-balance-card {
+	display: inline-block;
+	padding: 24px 32px;
+	border: 1.5px solid #e5e7eb;
+	border-radius: 12px;
+	background: #fff;
+	text-align: center;
+	min-width: 220px;
+}
+
+.stl-balance-label {
+	font-size: 12px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: #6b7280;
+	margin-bottom: 8px;
+}
+
+.stl-balance-amount {
+	font-size: 38px;
+	font-weight: 800;
+	color: var(--stl-lb-accent, #9945ff);
+	letter-spacing: -0.02em;
+	margin-bottom: 10px;
+}
+
+.stl-balance-meta {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 12px;
+	color: #9ca3af;
+}
+
+.stl-mint {
+	font-family: monospace;
+}
+
+/* --- Notice ----------------------------------------------------------------- */
+
+.stl-notice {
+	padding: 12px 16px;
+	background: #f3f4f6;
+	border-radius: 8px;
+	font-size: 14px;
+	color: #374151;
+	border-left: 3px solid #d1d5db;
+}
+
+.stl-notice-warn {
+	background: #fffbeb;
+	border-color: #f59e0b;
+	color: #92400e;
+}
+
+/* --- Feedback messages ------------------------------------------------------ */
+
+#stl-wallet-message {
+	margin-top: 12px;
+	padding: 10px 14px;
+	border-radius: 6px;
+	font-size: 14px;
+	display: none;
+}
+
+#stl-wallet-message.stl-msg-success {
+	background: #ecfdf5;
+	color: #065f46;
+	border: 1px solid #a7f3d0;
+	display: block;
+}
+
+#stl-wallet-message.stl-msg-error {
+	background: #fef2f2;
+	color: #991b1b;
+	border: 1px solid #fecaca;
+	display: block;
+}
+
+/* --- Utility --------------------------------------------------------------- */
+
+.stl-hidden {
+	display: none !important;
+}
+
+/* ==========================================================================
+   Leaderboard — [stl_leaderboard]
+   ========================================================================== */
+
+.stl-leaderboard {
+	border: 1.5px solid #e5e7eb;
+	border-radius: 14px;
+	background: #fff;
+	overflow: hidden;
+	font-size: 14px;
+}
+
+/* Header bar */
+.stl-lb-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 16px 20px;
+	background: linear-gradient(135deg, var(--stl-lb-from, #9945ff) 0%, var(--stl-lb-to, #6d28d9) 100%);
+	color: #fff;
+}
+
+.stl-lb-title {
+	font-size: 17px;
+	font-weight: 700;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.stl-lb-trophy {
+	font-size: 20px;
+}
+
+.stl-lb-meta {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	font-size: 13px;
+	opacity: 0.9;
+}
+
+.stl-lb-myrank strong {
+	font-weight: 700;
+	color: var(--stl-lb-rank, #14f195);
+}
+
+/* Scrollable table wrapper */
+.stl-lb-table-wrap {
+	overflow-x: auto;
+	-webkit-overflow-scrolling: touch;
+}
+
+/* Table */
+.stl-lb-table {
+	width: 100%;
+	border-collapse: collapse;
+	min-width: 420px;
+}
+
+.stl-lb-th {
+	padding: 10px 16px;
+	font-size: 11px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+	color: #6b7280;
+	background: #f9fafb;
+	border-bottom: 1.5px solid #e5e7eb;
+	white-space: nowrap;
+	text-align: left;
+}
+
+.stl-lb-th.stl-lb-rank,
+.stl-lb-th.stl-lb-bal {
+	text-align: center;
+}
+
+.stl-lb-td {
+	padding: 11px 16px;
+	border-bottom: 1px solid #f3f4f6;
+	vertical-align: middle;
+	color: #111827;
+}
+
+.stl-lb-td.stl-lb-rank {
+	text-align: center;
+	font-weight: 700;
+	font-size: 15px;
+	color: #6b7280;
+	width: 48px;
+}
+
+.stl-lb-td.stl-lb-bal {
+	text-align: right;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	color: var(--stl-lb-accent, #9945ff);
+	white-space: nowrap;
+}
+
+.stl-lb-unit {
+	font-size: 11px;
+	font-weight: 600;
+	color: #9ca3af;
+	margin-left: 1px;
+}
+
+.stl-lb-td.stl-lb-upd {
+	font-size: 12px;
+	color: #9ca3af;
+	white-space: nowrap;
+}
+
+.stl-lb-td.stl-lb-wallet {
+	font-size: 12px;
+}
+
+/* Row states */
+.stl-lb-row:last-child .stl-lb-td {
+	border-bottom: none;
+}
+
+.stl-lb-row:hover .stl-lb-td {
+	background: #fafafa;
+}
+
+/* Top 3 highlight rows */
+.stl-lb-rank-1 .stl-lb-td { background: #fffbeb; }
+.stl-lb-rank-2 .stl-lb-td { background: #f8fafc; }
+.stl-lb-rank-3 .stl-lb-td { background: #fff7f0; }
+
+.stl-lb-rank-1:hover .stl-lb-td { background: #fef3c7; }
+.stl-lb-rank-2:hover .stl-lb-td { background: #f1f5f9; }
+.stl-lb-rank-3:hover .stl-lb-td { background: #ffedd5; }
+
+/* "You" row */
+.stl-lb-mine .stl-lb-td {
+	background: var(--stl-lb-you-bg, #f5f3ff) !important;
+}
+
+.stl-lb-mine:hover .stl-lb-td {
+	background: var(--stl-lb-you-bg, #ede9fe) !important;
+	filter: brightness(0.96);
+}
+
+/* User cell */
+.stl-lb-user-cell {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.stl-lb-avatar {
+	width: 36px;
+	height: 36px;
+	border-radius: 50%;
+	object-fit: cover;
+	flex-shrink: 0;
+}
+
+.stl-lb-avatar-placeholder {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: #e5e7eb;
+	color: #6b7280;
+	font-weight: 700;
+	font-size: 15px;
+}
+
+.stl-lb-user-info {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+}
+
+.stl-lb-name {
+	font-weight: 600;
+	font-size: 14px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 160px;
+}
+
+.stl-lb-handle {
+	font-size: 12px;
+	color: #6b7280;
+	text-decoration: none;
+}
+
+.stl-lb-handle:hover {
+	color: var(--stl-lb-accent, #9945ff);
+	text-decoration: underline;
+}
+
+/* "You" badge */
+.stl-lb-you-badge {
+	margin-left: auto;
+	padding: 2px 8px;
+	border-radius: 99px;
+	background: var(--stl-lb-accent, #9945ff);
+	color: #fff;
+	font-size: 11px;
+	font-weight: 700;
+	flex-shrink: 0;
+}
+
+/* Wallet address link */
+.stl-lb-wallet-link {
+	font-family: monospace;
+	color: #6b7280;
+	text-decoration: none;
+}
+
+.stl-lb-wallet-link:hover {
+	color: var(--stl-lb-accent, #9945ff);
+	text-decoration: underline;
+}
+
+/* Footer */
+.stl-lb-footer {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 10px 20px;
+	background: #f9fafb;
+	border-top: 1.5px solid #e5e7eb;
+	font-size: 12px;
+	color: #9ca3af;
+}
+
+.stl-lb-mint-label {
+	font-weight: 600;
+	color: #6b7280;
+}
+
+.stl-lb-mint-link {
+	font-family: monospace;
+	color: #6b7280;
+	text-decoration: none;
+}
+
+.stl-lb-mint-link:hover {
+	color: var(--stl-lb-accent, #9945ff);
+}
+
+.stl-lb-footer-note {
+	margin-left: auto;
+}
+
+/* Responsive */
+@media (max-width: 540px) {
+	.stl-lb-header {
+		flex-direction: column;
+		align-items: flex-start;
+	}
+
+	.stl-lb-name {
+		max-width: 100px;
+	}
+}

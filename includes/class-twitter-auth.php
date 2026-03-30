@@ -285,6 +285,97 @@ class STL_Twitter_Auth {
 		return $user_id;
 	}
 
+	/**
+	 * Refresh a user's Twitter profile data (avatar, display name, handle) using
+	 * their stored access token. Falls back to refreshing the access token via the
+	 * stored refresh token if the first call returns a 401.
+	 *
+	 * Called by the daily cron so profile pictures stay current without requiring
+	 * users to reconnect their account.
+	 *
+	 * @param  int  $user_id  WordPress user ID.
+	 * @return bool  True if the profile was refreshed successfully, false otherwise.
+	 */
+	public function refresh_user_profile( int $user_id ): bool {
+		$access_token = get_user_meta( $user_id, 'stl_access_token', true );
+		if ( ! $access_token ) {
+			return false;
+		}
+
+		$user_data = $this->get_user_info( $access_token );
+
+		// Access token may have expired — try a token refresh and retry once.
+		if ( is_wp_error( $user_data ) ) {
+			$refresh_token = get_user_meta( $user_id, 'stl_refresh_token', true );
+			if ( ! $refresh_token ) {
+				return false;
+			}
+
+			$new_tokens = $this->do_refresh_token( $refresh_token );
+			if ( is_wp_error( $new_tokens ) ) {
+				return false;
+			}
+
+			update_user_meta( $user_id, 'stl_access_token', $new_tokens['access_token'] );
+			if ( ! empty( $new_tokens['refresh_token'] ) ) {
+				update_user_meta( $user_id, 'stl_refresh_token', $new_tokens['refresh_token'] );
+			}
+
+			$user_data = $this->get_user_info( $new_tokens['access_token'] );
+			if ( is_wp_error( $user_data ) ) {
+				return false;
+			}
+		}
+
+		$avatar = esc_url_raw( $user_data['profile_image_url'] ?? '' );
+		$avatar = str_replace( '_normal', '_400x400', $avatar );
+
+		if ( $avatar ) {
+			update_user_meta( $user_id, 'stl_twitter_avatar', $avatar );
+		}
+		if ( ! empty( $user_data['name'] ) ) {
+			update_user_meta( $user_id, 'stl_twitter_name', sanitize_text_field( $user_data['name'] ) );
+		}
+		if ( ! empty( $user_data['username'] ) ) {
+			update_user_meta( $user_id, 'stl_twitter_username', sanitize_text_field( $user_data['username'] ) );
+		}
+
+		return true;
+	}
+
+	/**
+	 * Exchange a refresh token for a new access token.
+	 *
+	 * @return array|WP_Error  Token response array on success.
+	 */
+	private function do_refresh_token( string $refresh_token ) {
+		$response = wp_remote_post(
+			self::TOKEN_URL,
+			[
+				'headers' => [
+					'Content-Type'  => 'application/x-www-form-urlencoded',
+					'Authorization' => 'Basic ' . base64_encode( $this->client_id . ':' . $this->client_secret ),
+				],
+				'body'    => [
+					'grant_type'    => 'refresh_token',
+					'refresh_token' => $refresh_token,
+				],
+				'timeout' => 15,
+			]
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$data = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( empty( $data['access_token'] ) ) {
+			return new WP_Error( 'refresh_failed', 'Token refresh failed.' );
+		}
+
+		return $data;
+	}
+
 	private function unique_username( $base ) {
 		$username = 'x_' . sanitize_user( $base, true );
 		$original = $username;

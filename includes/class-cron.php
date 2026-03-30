@@ -41,11 +41,21 @@ class STL_Cron {
 			return;
 		}
 
-		$solana = new STL_Solana();
+		$solana   = new STL_Solana();
+		$twitter  = new STL_Twitter_Auth();
+		$has_creds = $twitter->is_configured();
 
 		foreach ( $user_ids as $user_id ) {
 			$solana->update_user_balance( (int) $user_id );
-			// Brief pause to be courteous to the public RPC endpoint.
+
+			// Refresh Twitter avatar / display name / handle using the stored
+			// access token so profile pictures stay current without requiring
+			// users to reconnect their account.
+			if ( $has_creds ) {
+				$twitter->refresh_user_profile( (int) $user_id );
+			}
+
+			// Brief pause to be courteous to external APIs.
 			usleep( 200000 ); // 200 ms
 		}
 	}

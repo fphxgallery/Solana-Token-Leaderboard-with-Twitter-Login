@@ -105,14 +105,34 @@ Found under **Settings → Solana Twitter Login → Airdrop Tokens**.
 | Setting | Description |
 |---|---|
 | Twitter Client ID | OAuth 2.0 client ID from the developer portal |
-| Twitter Client Secret | OAuth 2.0 client secret |
+| Twitter Client Secret | Encrypted at rest — paste to set, leave blank to keep existing |
 | Token Mint Address | SPL token mint (defaults to the plugin constant) |
 | Solana RPC Endpoint | Mainnet RPC URL (default is public; use Helius/QuickNode for production) |
 | After Login Redirect URL | Where to send users after a successful Twitter login |
 | Leaderboard Colors | Five color pickers for gradient, accent, rank highlight, and "You" row background |
 | Treasury Private Key | Encrypted 64-byte Base58 keypair for the airdrop treasury wallet |
 
+## Security
+
+- **OAuth tokens encrypted at rest** — Twitter access and refresh tokens are stored encrypted (AES-256-GCM) in the database, not as plaintext
+- **Client secret encrypted at rest** — stored the same way as the treasury key; never echoed back to the page
+- **Server-side airdrop preview** — recipients are stored in a server-side transient after preview; the confirm step loads from there, preventing client-side tampering
+- **OAuth state IP binding** — the OAuth state token is HMAC-bound to the initiating IP address, preventing session fixation and CSRF
+- **Rate limiting** — OAuth callback is limited to 10 attempts per IP per 5 minutes
+- **Strict wallet validation** — addresses are base58-decoded and verified to produce exactly 32 bytes before acceptance
+- **No raw SQL** — all data access goes through the WordPress meta API
+
 ## Changelog
+
+### 2.1.3
+- Security: encrypt OAuth access/refresh tokens in `wp_usermeta` (AES-256-GCM)
+- Security: encrypt Twitter client secret at rest; settings form uses placeholder instead of echoing value
+- Security: airdrop execute loads recipients from server-side transient, not client-submitted JSON
+- Security: OAuth state token is HMAC-bound to client IP to prevent CSRF/session fixation
+- Security: rate limit OAuth callback to 10 requests per IP per 5 minutes
+- Security: wallet validation now base58-decodes and checks for 32 bytes
+- Security: generic user-facing error messages; detailed errors logged server-side only
+- Security: cap OAuth callback retry sleep to 1s (was up to 15s) to prevent PHP worker exhaustion
 
 ### 2.1.2
 - Fix: Twitter avatars and profile data now refresh during the daily balance check cron so leaderboard photos stay current without users needing to reconnect

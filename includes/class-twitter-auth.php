@@ -13,13 +13,19 @@ class STL_Twitter_Auth {
 	const TOKEN_URL = 'https://api.x.com/2/oauth2/token';
 	const USER_URL  = 'https://api.x.com/2/users/me';
 
+	/**
+	 * HTTP status codes that indicate a transient server-side problem.
+	 * These are safe to retry without any changes to the request.
+	 */
+	const RETRYABLE_CODES = [ 429, 500, 502, 503, 504 ];
+
 	private $client_id;
 	private $client_secret;
 	private $redirect_uri;
 
 	public function __construct() {
 		$this->client_id     = get_option( 'stl_twitter_client_id', '' );
-		$this->client_secret = get_option( 'stl_twitter_client_secret', '' );
+		$this->client_secret = $this->decrypt_stored( get_option( 'stl_twitter_client_secret', '' ) );
 		$this->redirect_uri  = home_url( '/?stl_action=twitter_callback' );
 	}
 
@@ -35,7 +41,11 @@ class STL_Twitter_Auth {
 		$code_challenge = $this->generate_code_challenge( $code_verifier );
 		$state          = wp_generate_password( 32, false );
 
-		set_transient( 'stl_oauth_' . $state, $code_verifier, 10 * MINUTE_IN_SECONDS );
+		// Store code verifier + IP hash for session binding (#9 / #10).
+		set_transient( 'stl_oauth_' . $state, [
+			'verifier' => $code_verifier,
+			'ip_hash'  => $this->hash_ip(),
+		], 10 * MINUTE_IN_SECONDS );
 
 		$params = [
 			'response_type'         => 'code',
@@ -56,10 +66,28 @@ class STL_Twitter_Auth {
 	 * @return int|WP_Error  WordPress user ID on success.
 	 */
 	public function handle_callback( $code, $state ) {
-		$code_verifier = get_transient( 'stl_oauth_' . $state );
-		if ( ! $code_verifier ) {
-			return new WP_Error( 'invalid_state', 'OAuth state mismatch. Please try logging in again.' );
+		$stored = get_transient( 'stl_oauth_' . $state );
+
+		// Legacy format: stored value may be a plain string (code verifier) from before
+		// the IP-binding change. Handle both formats.
+		if ( is_array( $stored ) ) {
+			$code_verifier = $stored['verifier'] ?? '';
+			$stored_ip     = $stored['ip_hash'] ?? '';
+		} else {
+			$code_verifier = $stored;
+			$stored_ip     = '';
 		}
+
+		if ( ! $code_verifier ) {
+			return new WP_Error( 'invalid_state', 'OAuth session expired or invalid. Please try logging in again.' );
+		}
+
+		// Verify IP binding if available.
+		if ( $stored_ip && $stored_ip !== $this->hash_ip() ) {
+			delete_transient( 'stl_oauth_' . $state );
+			return new WP_Error( 'ip_mismatch', 'OAuth session originated from a different network. Please try logging in again.' );
+		}
+
 		delete_transient( 'stl_oauth_' . $state );
 
 		$token_data = $this->exchange_code( $code, $code_verifier );
@@ -67,7 +95,9 @@ class STL_Twitter_Auth {
 			return $token_data;
 		}
 
-		$twitter_user = $this->get_user_info( $token_data['access_token'] );
+		// Cap retries to 2 in the synchronous callback path to avoid blocking
+		// PHP workers for 15+ seconds during Twitter API outages.
+		$twitter_user = $this->get_user_info( $token_data['access_token'], 2 );
 		if ( is_wp_error( $twitter_user ) ) {
 			return $twitter_user;
 		}
@@ -94,7 +124,7 @@ class STL_Twitter_Auth {
 		// We do NOT retry HTTP 5xx here because the auth code is single-use —
 		// if Twitter processed the request but returned a bad status, a retry
 		// would fail with "code already consumed".
-		$max_net_attempts = 3;
+		$max_net_attempts = 2;
 		for ( $attempt = 1; $attempt <= $max_net_attempts; $attempt++ ) {
 			$response = wp_remote_post( self::TOKEN_URL, $args );
 
@@ -103,42 +133,40 @@ class STL_Twitter_Auth {
 			}
 
 			if ( $attempt < $max_net_attempts ) {
-				sleep( 1 << ( $attempt - 1 ) ); // 1 s, 2 s
+				sleep( 1 );
 			}
 		}
 
 		if ( is_wp_error( $response ) ) {
-			return $response;
+			return new WP_Error( 'token_error', 'Unable to reach X/Twitter. Please try again.' );
 		}
 
-		$data = json_decode( wp_remote_retrieve_body( $response ), true );
+		$data      = json_decode( wp_remote_retrieve_body( $response ), true );
+		$http_code = (int) wp_remote_retrieve_response_code( $response );
 
 		if ( empty( $data['access_token'] ) ) {
-			$http_code = (int) wp_remote_retrieve_response_code( $response );
-			// Surface a friendly message for transient token-endpoint outages.
+			// Log the detailed error for the site admin.
+			$detail = $this->extract_twitter_error( $data, $http_code );
+			error_log( '[STL] Token exchange failed: ' . $detail );
+
+			// Return a generic message to the user.
 			if ( in_array( $http_code, self::RETRYABLE_CODES, true ) ) {
-				return new WP_Error(
-					'token_error',
-					$this->extract_twitter_error( $data, $http_code )
-				);
+				return new WP_Error( 'token_error', 'X/Twitter is temporarily unavailable. Please try again in a moment.' );
 			}
-			$msg = $data['error_description'] ?? $data['error'] ?? 'Unknown token error.';
-			return new WP_Error( 'token_error', $msg . ' (HTTP ' . $http_code . ')' );
+			return new WP_Error( 'token_error', 'Login failed. Please check the plugin\'s Twitter API configuration.' );
 		}
 
 		return $data;
 	}
 
 	/**
-	 * HTTP status codes that indicate a transient server-side problem.
-	 * These are safe to retry without any changes to the request.
+	 * Fetch the authenticated user's profile from the Twitter API.
+	 *
+	 * @param  string $access_token  Bearer token.
+	 * @param  int    $max_attempts  Number of retries (default 2 for sync, increase for cron).
+	 * @return array|WP_Error
 	 */
-	const RETRYABLE_CODES = [ 429, 500, 502, 503, 504 ];
-
-	private function get_user_info( $access_token ) {
-		// 5 attempts with exponential back-off: 1 s → 2 s → 4 s → 8 s between tries.
-		// Total worst-case sleep: 15 s, well within default PHP execution limits.
-		$max_attempts   = 5;
+	private function get_user_info( $access_token, $max_attempts = 2 ) {
 		$last_http_code = 0;
 		$last_data      = null;
 
@@ -147,17 +175,17 @@ class STL_Twitter_Auth {
 				self::USER_URL . '?user.fields=profile_image_url,name,username',
 				[
 					'headers' => [ 'Authorization' => 'Bearer ' . $access_token ],
-					'timeout' => 10, // Slightly shorter so retries fit in budget.
+					'timeout' => 10,
 				]
 			);
 
 			// Network-level failure — retry if attempts remain.
 			if ( is_wp_error( $response ) ) {
 				if ( $attempt < $max_attempts ) {
-					sleep( 1 << ( $attempt - 1 ) ); // 1 s, 2 s, 4 s, 8 s
+					sleep( 1 );
 					continue;
 				}
-				return $response;
+				return new WP_Error( 'user_error', 'Unable to reach X/Twitter. Please try again.' );
 			}
 
 			$last_http_code = (int) wp_remote_retrieve_response_code( $response );
@@ -170,7 +198,7 @@ class STL_Twitter_Auth {
 
 			// Transient server error — wait and retry.
 			if ( in_array( $last_http_code, self::RETRYABLE_CODES, true ) && $attempt < $max_attempts ) {
-				sleep( 1 << ( $attempt - 1 ) ); // 1 s, 2 s, 4 s, 8 s
+				sleep( 1 );
 				continue;
 			}
 
@@ -178,49 +206,34 @@ class STL_Twitter_Auth {
 			break;
 		}
 
-		return new WP_Error( 'user_error', $this->extract_twitter_error( $last_data, $last_http_code ) );
+		// Log detailed error for site admin.
+		$detail = $this->extract_twitter_error( $last_data, $last_http_code );
+		error_log( '[STL] get_user_info failed: ' . $detail );
+
+		// Return generic message to caller.
+		return new WP_Error( 'user_error', 'Could not retrieve profile from X/Twitter. Please try again.' );
 	}
 
 	/**
 	 * Pull a human-readable message out of a Twitter API v2 error response.
-	 * Twitter can return several different error shapes depending on the endpoint
-	 * and tier, so we check each one in order of specificity.
-	 *
-	 * @param  array|null $body       Decoded JSON body (may be null on parse failure).
-	 * @param  int        $http_code  HTTP status code.
-	 * @return string
+	 * Used for logging only — never exposed directly to users.
 	 */
 	private function extract_twitter_error( $body, $http_code ) {
-		// Transient infrastructure errors — user-friendly message, no config hints.
-		if ( $http_code === 503 || $http_code === 502 ) {
-			return 'X/Twitter\'s API is temporarily unavailable (HTTP ' . $http_code . '). Please try logging in again in a moment.';
-		}
-		if ( $http_code === 429 ) {
-			return 'X/Twitter rate limit reached (HTTP 429). Please wait a minute and try again.';
-		}
-
 		if ( is_array( $body ) ) {
-			// OAuth / app-level errors: { "error": "...", "error_description": "..." }
 			if ( ! empty( $body['error_description'] ) ) {
 				return $body['error_description'] . ' (HTTP ' . $http_code . ')';
 			}
-			// API v2 problem details: { "title": "...", "detail": "..." }
 			if ( ! empty( $body['detail'] ) ) {
 				return $body['detail'] . ' (HTTP ' . $http_code . ')';
 			}
 			if ( ! empty( $body['title'] ) ) {
 				return $body['title'] . ' (HTTP ' . $http_code . ')';
 			}
-			// API v2 errors array: { "errors": [{ "message": "..." }] }
 			if ( ! empty( $body['errors'][0]['message'] ) ) {
 				return $body['errors'][0]['message'] . ' (HTTP ' . $http_code . ')';
 			}
 		}
-
-		// Fallback — include the HTTP code so at least something actionable is shown.
-		return 'Could not retrieve user data from X/Twitter (HTTP ' . $http_code . '). '
-			. 'Common causes: app missing "Read" permission, incorrect OAuth 2.0 setup, '
-			. 'or callback URL mismatch in the developer portal.';
+		return 'HTTP ' . $http_code;
 	}
 
 	/**
@@ -276,10 +289,11 @@ class STL_Twitter_Auth {
 		update_user_meta( $user_id, 'stl_twitter_username', $username );
 		update_user_meta( $user_id, 'stl_twitter_name',     $name );
 		update_user_meta( $user_id, 'stl_twitter_avatar',   $avatar );
-		update_user_meta( $user_id, 'stl_access_token',     $token_data['access_token'] );
 
+		// Encrypt OAuth tokens before storage (#1).
+		update_user_meta( $user_id, 'stl_access_token',  $this->encrypt_token( $token_data['access_token'] ) );
 		if ( ! empty( $token_data['refresh_token'] ) ) {
-			update_user_meta( $user_id, 'stl_refresh_token', $token_data['refresh_token'] );
+			update_user_meta( $user_id, 'stl_refresh_token', $this->encrypt_token( $token_data['refresh_token'] ) );
 		}
 
 		return $user_id;
@@ -297,31 +311,33 @@ class STL_Twitter_Auth {
 	 * @return bool  True if the profile was refreshed successfully, false otherwise.
 	 */
 	public function refresh_user_profile( int $user_id ): bool {
-		$access_token = get_user_meta( $user_id, 'stl_access_token', true );
-		if ( ! $access_token ) {
+		$access_token_stored = get_user_meta( $user_id, 'stl_access_token', true );
+		if ( ! $access_token_stored ) {
 			return false;
 		}
+		$access_token = $this->decrypt_token( $access_token_stored );
 
-		$user_data = $this->get_user_info( $access_token );
+		$user_data = $this->get_user_info( $access_token, 2 );
 
 		// Access token may have expired — try a token refresh and retry once.
 		if ( is_wp_error( $user_data ) ) {
-			$refresh_token = get_user_meta( $user_id, 'stl_refresh_token', true );
-			if ( ! $refresh_token ) {
+			$refresh_token_stored = get_user_meta( $user_id, 'stl_refresh_token', true );
+			if ( ! $refresh_token_stored ) {
 				return false;
 			}
+			$refresh_token = $this->decrypt_token( $refresh_token_stored );
 
 			$new_tokens = $this->do_refresh_token( $refresh_token );
 			if ( is_wp_error( $new_tokens ) ) {
 				return false;
 			}
 
-			update_user_meta( $user_id, 'stl_access_token', $new_tokens['access_token'] );
+			update_user_meta( $user_id, 'stl_access_token', $this->encrypt_token( $new_tokens['access_token'] ) );
 			if ( ! empty( $new_tokens['refresh_token'] ) ) {
-				update_user_meta( $user_id, 'stl_refresh_token', $new_tokens['refresh_token'] );
+				update_user_meta( $user_id, 'stl_refresh_token', $this->encrypt_token( $new_tokens['refresh_token'] ) );
 			}
 
-			$user_data = $this->get_user_info( $new_tokens['access_token'] );
+			$user_data = $this->get_user_info( $new_tokens['access_token'], 2 );
 			if ( is_wp_error( $user_data ) ) {
 				return false;
 			}
@@ -374,6 +390,62 @@ class STL_Twitter_Auth {
 		}
 
 		return $data;
+	}
+
+	// -------------------------------------------------------------------------
+	// Token encryption (#1) / secret decryption (#3)
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Encrypt a token string for database storage.
+	 * Uses the same AES-256-GCM mechanism as the treasury key.
+	 */
+	private function encrypt_token( string $plaintext ): string {
+		if ( empty( $plaintext ) || ! class_exists( 'STL_Solana_Signer' ) ) {
+			return $plaintext;
+		}
+		$signer = new STL_Solana_Signer();
+		return $signer->encrypt_key( $plaintext );
+	}
+
+	/**
+	 * Decrypt a stored token, handling legacy plaintext values gracefully.
+	 *
+	 * Before encryption was added, tokens were stored as plain strings.
+	 * If decryption fails we assume the stored value is legacy plaintext.
+	 */
+	private function decrypt_token( string $stored ): string {
+		if ( empty( $stored ) || ! class_exists( 'STL_Solana_Signer' ) ) {
+			return $stored;
+		}
+		$signer = new STL_Solana_Signer();
+		try {
+			return $signer->decrypt_key( $stored );
+		} catch ( \Exception $e ) {
+			// Legacy plaintext — return as-is.
+			return $stored;
+		}
+	}
+
+	/**
+	 * Decrypt a stored option value (client secret, etc).
+	 * Falls back to plaintext for backward compatibility.
+	 */
+	private function decrypt_stored( string $stored ): string {
+		return $this->decrypt_token( $stored );
+	}
+
+	// -------------------------------------------------------------------------
+	// Helpers
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Hash the client IP for session-binding the OAuth state.
+	 * Uses HMAC with AUTH_SALT so the hash can't be predicted from a known IP.
+	 */
+	private function hash_ip(): string {
+		$ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+		return hash_hmac( 'sha256', $ip, AUTH_SALT );
 	}
 
 	private function unique_username( $base ) {

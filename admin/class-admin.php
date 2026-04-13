@@ -42,7 +42,9 @@ class STL_Admin {
 		$color = [ 'sanitize_callback' => 'sanitize_hex_color' ];
 
 		register_setting( 'stl_settings', 'stl_twitter_client_id',     $text );
-		register_setting( 'stl_settings', 'stl_twitter_client_secret', $text );
+		register_setting( 'stl_settings', 'stl_twitter_client_secret', [
+			'sanitize_callback' => [ $this, 'sanitize_client_secret' ],
+		] );
 		register_setting( 'stl_settings', 'stl_solana_rpc',            $url );
 		register_setting( 'stl_settings', 'stl_token_mint',            $text );
 		register_setting( 'stl_settings', 'stl_redirect_after_login',  $url );
@@ -127,7 +129,8 @@ class STL_Admin {
 						<th scope="row"><label for="stl_client_secret">Client Secret</label></th>
 						<td>
 							<input type="password" id="stl_client_secret" name="stl_twitter_client_secret"
-								value="<?php echo esc_attr( get_option( 'stl_twitter_client_secret' ) ); ?>"
+								value=""
+								placeholder="<?php echo get_option( 'stl_twitter_client_secret' ) ? '(saved — paste to replace)' : ''; ?>"
 								class="regular-text" autocomplete="new-password" />
 						</td>
 					</tr>
@@ -618,6 +621,21 @@ class STL_Admin {
 		return $signer->encrypt_key( $input );
 	}
 
+	/**
+	 * Sanitize the client secret: encrypt at rest, keep existing if empty (#3).
+	 */
+	public function sanitize_client_secret( $input ) {
+		$input = trim( (string) $input );
+		if ( $input === '' ) {
+			return get_option( 'stl_twitter_client_secret', '' );
+		}
+		if ( class_exists( 'STL_Solana_Signer' ) ) {
+			$signer = new STL_Solana_Signer();
+			return $signer->encrypt_key( $input );
+		}
+		return sanitize_text_field( $input );
+	}
+
 	// -------------------------------------------------------------------------
 	// AJAX: manual balance check
 	// -------------------------------------------------------------------------
@@ -733,7 +751,11 @@ class STL_Admin {
 			$decimals = 9;
 			foreach ( $rows as $row ) {
 				$amount_ui  = round( $row['weight'] * $total, $decimals );
-				$amount_raw = (int) round( $amount_ui * 1e9 );
+				$amount_raw = round( $amount_ui * 1e9 );
+				if ( $amount_raw > PHP_INT_MAX || $amount_raw < 0 ) {
+					wp_send_json_error( 'Computed amount exceeds safe integer range. Reduce the total.' );
+				}
+				$amount_raw = (int) $amount_raw;
 				$recipients[] = [
 					'rank'          => $row['rank'],
 					'twitter'       => $row['twitter'],
@@ -753,7 +775,11 @@ class STL_Admin {
 					continue;
 				}
 				$amount_ui  = round( $row['weight'] * $total, $decimals );
-				$amount_raw = (int) round( $amount_ui * pow( 10, $decimals ) );
+				$amount_raw = round( $amount_ui * pow( 10, $decimals ) );
+				if ( $amount_raw > PHP_INT_MAX || $amount_raw < 0 ) {
+					wp_send_json_error( 'Computed amount exceeds safe integer range. Reduce the total.' );
+				}
+				$amount_raw = (int) $amount_raw;
 				$recipients[] = [
 					'rank'          => $row['rank'],
 					'twitter'       => $row['twitter'],
@@ -772,11 +798,20 @@ class STL_Admin {
 			wp_send_json_error( $err );
 		}
 
-		wp_send_json_success( [
+		// Store preview server-side so the execute handler cannot be fed
+		// tampered recipients from the client (#2).
+		$preview_token = wp_generate_password( 32, false );
+		set_transient( 'stl_airdrop_' . $preview_token, [
 			'recipients' => $recipients,
-			'skipped'    => $skipped,
-			'total_ui'   => array_sum( array_column( $recipients, 'amount_ui' ) ),
 			'asset'      => $asset,
+		], 30 * MINUTE_IN_SECONDS );
+
+		wp_send_json_success( [
+			'recipients'    => $recipients,
+			'skipped'       => $skipped,
+			'total_ui'      => array_sum( array_column( $recipients, 'amount_ui' ) ),
+			'asset'         => $asset,
+			'preview_token' => $preview_token,
 		] );
 	}
 
@@ -800,34 +835,18 @@ class STL_Admin {
 			wp_send_json_error( 'No treasury key configured.' );
 		}
 
-		$asset  = in_array( sanitize_key( $_POST['asset'] ?? 'token' ), [ 'token', 'sol' ], true )
-			? sanitize_key( $_POST['asset'] ?? 'token' )
-			: 'token';
-		$mint   = $asset === 'sol' ? STL_Solana_Signer::SOL_MINT : '';
-
-		$recipients_raw = json_decode( wp_unslash( $_POST['recipients'] ?? '[]' ), true );
-		if ( ! is_array( $recipients_raw ) || empty( $recipients_raw ) ) {
-			wp_send_json_error( 'No recipients provided.' );
+		// Load the server-side preview instead of accepting recipients from the
+		// client. This prevents wallet/amount tampering between preview and confirm (#2).
+		$preview_token = sanitize_text_field( $_POST['preview_token'] ?? '' );
+		$preview       = get_transient( 'stl_airdrop_' . $preview_token );
+		if ( ! $preview || empty( $preview['recipients'] ) ) {
+			wp_send_json_error( 'Preview expired or invalid. Please preview again.' );
 		}
+		delete_transient( 'stl_airdrop_' . $preview_token );
 
-		// Accept only the fields we need; sanitize each.
-		$recipients = [];
-		foreach ( $recipients_raw as $r ) {
-			if ( empty( $r['wallet'] ) || empty( $r['token_account'] ) || ! isset( $r['amount_raw'] ) ) {
-				continue;
-			}
-			$recipients[] = [
-				'wallet'        => sanitize_text_field( $r['wallet'] ),
-				'token_account' => sanitize_text_field( $r['token_account'] ),
-				'amount_raw'    => (int) $r['amount_raw'],
-				'amount_ui'     => (float) ( $r['amount_ui'] ?? 0 ),
-				'twitter'       => sanitize_text_field( $r['twitter'] ?? '' ),
-			];
-		}
-
-		if ( ! $recipients ) {
-			wp_send_json_error( 'No valid recipients.' );
-		}
+		$recipients = $preview['recipients'];
+		$asset      = $preview['asset'] ?? 'token';
+		$mint       = $asset === 'sol' ? STL_Solana_Signer::SOL_MINT : '';
 
 		$signer = new STL_Solana_Signer();
 		$req    = $signer->check_requirements();

@@ -86,10 +86,9 @@
 		msgEl.innerHTML        = '';
 
 		var fd = new FormData();
-		fd.append( 'action',     'stl_execute_airdrop' );
-		fd.append( 'nonce',      nonce );
-		fd.append( 'asset',      preview.asset || 'token' );
-		fd.append( 'recipients', JSON.stringify( preview.recipients ) );
+		fd.append( 'action',        'stl_execute_airdrop' );
+		fd.append( 'nonce',         nonce );
+		fd.append( 'preview_token', preview.preview_token );
 
 		fetch( ajaxUrl, { method: 'POST', body: fd } )
 			.then( function ( r ) { return r.json(); } )

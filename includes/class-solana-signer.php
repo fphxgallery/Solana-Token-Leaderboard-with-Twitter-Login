@@ -512,7 +512,7 @@ class STL_Solana_Signer {
 	 *
 	 * @throws \Exception on invalid characters.
 	 */
-	private function b58_decode( string $input ): string {
+	public function b58_decode( string $input ): string {
 		$alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 		$result   = '';
 
@@ -556,6 +556,17 @@ class STL_Solana_Signer {
 	// -------------------------------------------------------------------------
 	// Internal helpers
 	// -------------------------------------------------------------------------
+
+	/**
+	 * Validate that a base58 string decodes to a 32-byte Solana public key.
+	 */
+	public function is_valid_address( string $b58 ): bool {
+		try {
+			return strlen( $this->b58_decode( $b58 ) ) === 32;
+		} catch ( \Exception $e ) {
+			return false;
+		}
+	}
 
 	private function make_result( array $r, ?string $sig, ?string $error ): array {
 		return [

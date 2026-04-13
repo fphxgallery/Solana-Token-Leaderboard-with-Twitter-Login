@@ -48,10 +48,18 @@ class STL_Public {
 			return;
 		}
 
+		// Rate limit: max 10 OAuth callbacks per IP per 5 minutes (#6).
+		$ip       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+		$rate_key = 'stl_oauth_rate_' . md5( $ip );
+		$attempts = (int) get_transient( $rate_key );
+		if ( $attempts >= 10 ) {
+			wp_die( 'Too many login attempts. Please try again in a few minutes.', 'Rate Limited', [ 'response' => 429 ] );
+		}
+		set_transient( $rate_key, $attempts + 1, 5 * MINUTE_IN_SECONDS );
+
 		// Error returned by Twitter (e.g. user denied access).
 		if ( ! empty( $_GET['error'] ) ) {
-			$error = sanitize_text_field( $_GET['error_description'] ?? $_GET['error'] );
-			wp_die( 'Twitter login cancelled: ' . esc_html( $error ) );
+			wp_die( 'Twitter login was cancelled or denied. Please try again.' );
 		}
 
 		if ( empty( $_GET['code'] ) || empty( $_GET['state'] ) ) {
@@ -65,7 +73,7 @@ class STL_Public {
 		);
 
 		if ( is_wp_error( $result ) ) {
-			wp_die( 'Twitter login failed: ' . esc_html( $result->get_error_message() ) );
+			wp_die( 'Twitter login failed. Please try again. If the issue persists, contact the site administrator.' );
 		}
 
 		// Log the user in if not already.
@@ -649,10 +657,18 @@ class STL_Public {
 	// -------------------------------------------------------------------------
 
 	/**
-	 * Validate a Solana base58 address (32–44 chars, base58 alphabet).
+	 * Validate a Solana base58 address: must be valid base58 that decodes to
+	 * exactly 32 bytes (an Ed25519 public key) (#7).
 	 */
 	private function is_valid_solana_address( $addr ) {
-		return (bool) preg_match( '/^[1-9A-HJ-NP-Za-km-z]{32,44}$/', $addr );
+		if ( ! preg_match( '/^[1-9A-HJ-NP-Za-km-z]{32,44}$/', $addr ) ) {
+			return false;
+		}
+		if ( class_exists( 'STL_Solana_Signer' ) ) {
+			$signer = new STL_Solana_Signer();
+			return $signer->is_valid_address( $addr );
+		}
+		return true;
 	}
 
 	private static function x_logo_svg() {
